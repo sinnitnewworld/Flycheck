@@ -83,7 +83,7 @@ button.mini{min-height:28px;padding:2px 8px;font-size:13px}
    <div id="results" role="listbox"></div>
   </div>
   <div class="row"><button id="me">Use my location</button><button id="save">Save this spot</button></div>
-  <div id="map" aria-label="Map: tap to pick a spot"></div>
+  <div id="map" aria-label="Map: tap to pick a spot"></div><div class="mute" id="mapnote">Loading map…</div>
   <div class="chips" id="saved"></div>
   <div class="grid2">
    <div><label for="drone">Drone</label><select id="drone"></select></div>
@@ -127,26 +127,50 @@ function defaultWhen(){const d=istNow();d.setHours(d.getHours()+1,0,0,0);return 
 $("#when").value=defaultWhen();
 ["drone","wind","ht","when"].forEach(id=>$("#"+id).addEventListener("change",()=>{if(id=="drone")setWind();store.set("fc_prefs",{drone:$("#drone").value,ht:$("#ht").value});if(fc)evaluateAll()}));
 
-/* ---------- map ---------- */
-function initMap(){if(!window.L){$("#map").innerHTML='<div class="empty" style="border:0">Map unavailable offline. Search or use your location.</div>';return}
- map=L.map("map",{zoomControl:true}).setView([22.5,79],4);
+/* ---------- map: Mappls (MapmyIndia) first, OpenStreetMap if Mappls can't load ---------- */
+const MAPPLS_KEY="gnduyyncgumcnjwjpnudxdrmtgnnsdhxohbj";
+const mlog=[];function note(m){mlog.push(m);const el=$("#mapnote");if(el)el.textContent=m}
+function loadScript(src,ms){return new Promise((res,rej)=>{const s=document.createElement("script");s.src=src;s.async=true;s.onload=()=>res();s.onerror=()=>rej(new Error("couldn't load "+src.split("?")[0]));document.head.appendChild(s);setTimeout(()=>rej(new Error("timed out")),ms||15000)})}
+let mmap=null,mmarker=null,plugins=false;
+async function initMappls(){
+ await new Promise((res,rej)=>{window.__mlReady=res;loadScript(`https://sdk.mappls.com/map/sdk/web?v=3.0&access_token=${MAPPLS_KEY}&callback=__mlReady`,15000).catch(rej);setTimeout(()=>rej(new Error("map SDK timed out")),15000)});
+ if(!window.mappls||!mappls.Map)throw new Error("map SDK loaded but not ready (key not allowed for this site?)");
+ mmap=new mappls.Map("map",{center:[22.5,79],zoom:4,zoomControl:true,location:false});
+ await new Promise(r=>{try{mmap.addListener("load",r)}catch(e){r()}setTimeout(r,8000)});
+ mmap.addListener("click",e=>{const ll=e.lngLat||(e.latlng&&{lat:e.latlng.lat,lng:e.latlng.lng});if(ll)pick(ll.lat,ll.lng,null,true)});
+ try{await loadScript(`https://sdk.mappls.com/map/sdk/plugins?access_token=${MAPPLS_KEY}&v=3.0&libraries=search,getPinDetails`,15000);plugins=!!(mappls.search||mappls.getPinDetails)}catch(e){note("Mappls search tools didn't load: "+e.message)}}
+function initLeaflet(){if(!window.L){$("#map").innerHTML='<div class="empty" style="border:0">Map unavailable offline. Search or use your location.</div>';return}
+ $("#map").innerHTML="";map=L.map("map",{zoomControl:true}).setView([22.5,79],4);
  const streets=L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap"}).addTo(map);
  const sat=L.layerGroup([L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",{maxZoom:19,attribution:"Imagery &copy; Esri, Maxar, Earthstar Geographics"}),
   L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",{maxZoom:19})]);
  L.control.layers({"Streets":streets,"Satellite photo":sat},null,{position:"topright"}).addTo(map);
  map.on("click",e=>pick(e.latlng.lat,e.latlng.lng,null,true))}
-initMap();
+function mapGo(lat,lon){
+ if(mmap){try{mmap.setCenter({lat,lng:lon});if((mmap.getZoom&&mmap.getZoom()<12))mmap.setZoom(13);
+   if(mmarker)mmarker.setPosition({lat,lng:lon});else{mmarker=new mappls.Marker({map:mmap,position:{lat,lng:lon},draggable:true});
+    try{mmarker.addListener("dragend",()=>{const p=mmarker.getPosition();pick(p.lat,p.lng,null,true)})}catch(e){}}}catch(e){note("Map error: "+e.message)}return}
+ mapGo(lat,lon);}
+(async()=>{try{await initMappls();note("Map and search by Mappls (MapmyIndia).")}catch(e){note("Mappls map couldn't load ("+e.message+"). Showing OpenStreetMap instead.");mmap=null;initLeaflet()}})();
 
 /* ---------- geocoding ---------- */
 // Mappls (MapmyIndia) static key, restricted to this site in the Mappls console. Gives Indian address
 // search (apartments, buildings) and the official Digital Sky airspace layers.
-const MAPPLS_KEY="gnduyyncgumcnjwjpnudxdrmtgnnsdhxohbj";
 function findLatLon(o){if(!o||typeof o!="object")return null;const la=o.latitude??o.lat,lo=o.longitude??o.lng??o.lon;if(isFinite(+la)&&isFinite(+lo)&&+la!==0)return [+la,+lo];
  for(const k in o){const v=o[k];if(v&&typeof v=="object"){const r=findLatLon(v);if(r)return r}}return null}
-async function mapplsSearch(q){const near=spot?`&location=${spot.lat.toFixed(4)},${spot.lon.toFixed(4)}`:"";
- const r=await fetch(`https://search.mappls.com/search/places/autosuggest/json?query=${encodeURIComponent(q.slice(0,45))}&region=IND${near}&access_token=${MAPPLS_KEY}`);if(!r.ok)throw new Error("mappls "+r.status);
- const j=await r.json();return (j.suggestedLocations||[]).slice(0,8).map(x=>({name:x.placeName,desc:x.placeAddress||"",eLoc:x.eLoc,ll:findLatLon(x)}))}
-async function mapplsCoords(x){if(x.ll)return x.ll;
+let mWhy="";
+function viaPlugin(q){return new Promise((res,rej)=>{if(!plugins||!mappls.search)return rej(new Error("search plugin not loaded"));let done=false;
+ try{new mappls.search(q,{region:"IND",location:spot?[spot.lat,spot.lon]:undefined},d=>{done=true;res(Array.isArray(d)?d:(d&&(d.suggestedLocations||d.data))||[])})}catch(e){return rej(e)}
+ setTimeout(()=>{if(!done)rej(new Error("search plugin gave no answer"))},10000)})}
+async function mapplsSearch(q){const map1=x=>({name:x.placeName||x.poi||x.name,desc:x.placeAddress||x.address||"",eLoc:x.eLoc||x.mapplsPin||x.eloc,ll:findLatLon(x)});
+ try{const d=await viaPlugin(q);if(d.length)return d.slice(0,8).map(map1)}catch(e){mWhy="plugin: "+e.message}
+ const near=spot?`&location=${spot.lat.toFixed(4)},${spot.lon.toFixed(4)}`:"";
+ try{const r=await fetch(`https://search.mappls.com/search/places/autosuggest/json?query=${encodeURIComponent(q.slice(0,45))}&region=IND${near}&access_token=${MAPPLS_KEY}`);
+  if(!r.ok){mWhy+=` · web service: HTTP ${r.status}${r.status==401||r.status==403?" (key not allowed: check Mappls whitelisting / API access)":""}`;return []}
+  const j=await r.json();return (j.suggestedLocations||[]).slice(0,8).map(map1)}catch(e){mWhy+=" · web service blocked by the browser ("+e.message+")";return []}}
+function pinCoords(eLoc){return new Promise(res=>{if(!plugins||!mappls.getPinDetails||!eLoc)return res(null);let done=false;
+ try{mappls.getPinDetails({map:mmap||undefined,pin:eLoc,infoDiv:false},d=>{done=true;res(findLatLon(d))})}catch(e){res(null)}setTimeout(()=>{if(!done)res(null)},10000)})}
+async function mapplsCoords(x){if(x.ll)return x.ll;const p=await pinCoords(x.eLoc);if(p)return p;
  const r=await fetch(`https://search.mappls.com/search/address/geocode?address=${encodeURIComponent((x.name+", "+x.desc).slice(0,200))}&access_token=${MAPPLS_KEY}`);if(!r.ok)return null;return findLatLon(await r.json())}
 const LL=/^\s*(-?\d{1,2}(?:\.\d+)?)\s*[,\s]\s*(-?\d{1,3}(?:\.\d+)?)\s*$/;
 function dms(d,m,s,h){let v=(+d)+(+m||0)/60+(+s||0)/3600;if(/[SW]/i.test(h||""))v=-v;return v}
@@ -165,14 +189,14 @@ async function search(){const q=$("#q").value.trim();if(!q)return;const p=parseL
  if(p){hideResults();return pick(p.lat,p.lon,null,true)}
  showResults('<div><span class="spin"></span>Searching…</div>');
  let items=[],netFail=0;
- if(MAPPLS_KEY){try{items=(await mapplsSearch(q)).map(x=>({...x,mappls:true}))}catch(e){}}
+ mWhy="";if(MAPPLS_KEY){try{items=(await mapplsSearch(q)).map(x=>({...x,mappls:true}))}catch(e){mWhy+=" · "+e.message}}
  if(!items.length)try{const r=await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&countrycodes=in&q=${encodeURIComponent(q)}`);
   items=(await r.json()).map(x=>({name:x.name||x.display_name.split(",")[0],desc:x.display_name,lat:+x.lat,lon:+x.lon}))}catch(e){netFail++}
  if(!items.length){try{const r=await fetch(`https://geocoding-api.open-meteo.com/v1/search?count=6&countryCode=IN&name=${encodeURIComponent(q)}`);
   items=((await r.json()).results||[]).map(x=>({name:x.name,desc:[x.admin2,x.admin1,x.country].filter(Boolean).join(", "),lat:x.latitude,lon:x.longitude}))}catch(e){netFail++}}
  if(!items.length&&netFail>=2)return showResults('<div><b>Can\'t reach the internet from here.</b> If you opened this inside a chat preview, open the hosted link or the downloaded file in Chrome/Safari instead.</div>');
- if(!items.length)return showResults('<div>No match. Apartment and office names are often missing from the free map database. In Google Maps, long-press the spot, copy the coordinates and paste them here (or tap the map).</div>');
- showResults(items.map((x,i)=>`<div role="option" data-i="${i}"><b>${esc(x.name)}</b><small>${esc(x.desc)}</small></div>`).join(""));
+ if(!items.length)return showResults(`<div>No match.${mWhy?` <small>Mappls: ${esc(mWhy)}</small>`:""} Apartment and office names are often missing from the free map database. In Google Maps, long-press the spot, copy the coordinates and paste them here (or tap the map).</div>`);
+ showResults(items.map((x,i)=>`<div role="option" data-i="${i}"><b>${esc(x.name)}</b><small>${esc(x.desc)}${x.mappls?" · Mappls":""}</small></div>`).join("")+(mWhy&&!items[0].mappls?`<div><small>Mappls search didn't answer (${esc(mWhy)}); these results are from OpenStreetMap.</small></div>`:""));
  document.querySelectorAll("#results [data-i]").forEach(el=>el.onclick=async()=>{const x=items[+el.dataset.i];
   if(x.mappls){el.innerHTML='<span class="spin"></span>Finding it on the map…';const ll=await mapplsCoords(x);if(!ll)return el.innerHTML="<b>Couldn't get the location of this place.</b> Try another result or paste coordinates.";hideResults();return pick(ll[0],ll[1],x.name,false)}
   hideResults();pick(x.lat,x.lon,x.name,false)})}
@@ -198,7 +222,7 @@ renderSaved();
 /* ---------- data ---------- */
 async function pick(lat,lon,name,doReverse){
  spot={lat,lon,name:name||`${lat.toFixed(4)}, ${lon.toFixed(4)}`};
- if(map){map.setView([lat,lon],Math.max(map.getZoom(),11));if(marker)marker.setLatLng([lat,lon]);else{marker=L.marker([lat,lon],{draggable:true}).addTo(map);marker.on("dragend",e=>{const p=e.target.getLatLng();pick(p.lat,p.lng,null,true)})}}
+ mapGo(lat,lon);
  $("#out").innerHTML='<div class="empty"><span class="spin"></span>Getting the forecast…</div>';
  addr={};const revP=reverse(lat,lon).then(n=>{if(doReverse&&n&&spot&&spot.lat==lat){spot.name=n;const el=$("#pname");if(el)el.textContent=n}});spot.rev=revP;
  demo=false;
