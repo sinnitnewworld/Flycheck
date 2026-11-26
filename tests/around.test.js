@@ -34,4 +34,13 @@ t("letter contains the essentials", () => {
   const L = A.letterText({ pname: "Nitin", rpc: "RPC123", uin: "UA0001", date: "2026-12-01", from: "07:00", to: "08:00", maxh: "60", purpose: "Real-estate photography" }, "Rajarajeshwari Nagar Police Station", { name: "RR Nagar", lat: 12.92, lon: 77.51 }, "[zone]");
   ["Rajarajeshwari Nagar Police Station", "RPC123", "UA0001", "12.92000, 77.51000", "60 m", ].forEach(k => assert(L.includes(k), k));
 });
+t("news filter: only pilot-relevant VIP and air-show items", () => {
+  const ev = { items: [
+    { type: "vip", title: "Japanese lawmakers visit IISc in Bengaluru" },
+    { type: "airshow", title: "Aero India 2027 expands exhibition space in Bengaluru" },
+    { type: "vip", title: "Traffic diversions in Bengaluru for President's visit" },
+    { type: "vip", title: "Karnataka: security tightened for PM visit to Mysuru" } ] };
+  const m = A.matchEvents(ev, { city: "Bengaluru", state: "Karnataka" });
+  assert(m.length === 1 && /Traffic/.test(m[0].title), JSON.stringify(m));
+});
 console.log(n + " tests passed");

@@ -82,13 +82,19 @@ function placeTokens(addr) {
   const clean = s => s.replace(/\b(district|division|taluk|tehsil|city|urban|rural|municipal corporation)\b/gi, "").trim();
   return { local: [...new Set(local.map(clean).filter(s => s.length >= 4))], state: addr.state ? clean(addr.state) : null };
 }
+// a VIP visit only matters to pilots when it brings security measures; an air show only when it is a flying display
+const VIP_OK = /security|traffic|diversion|road closure|closed|restriction|no[- ]fly|drone|red zone|ban|prohibit|advisory|bandobast|cordon/i;
+const SHOW_OK = /air ?show|fly-?past|aerobatic|surya kiran|sarang|display|rehearsal/i;
+const SHOW_NOT = /expands|exhibition space|preparations|review|registration|bookings|tickets? sale|stall/i;
+function relevant(it) { if (it.type === "vip") return VIP_OK.test(it.title); if (it.type === "airshow") return SHOW_OK.test(it.title) && !SHOW_NOT.test(it.title); return true; }
 function matchEvents(ev, addr) {
   const { local, state } = placeTokens(addr), out = [];
   const has = (t, w) => new RegExp(`(^|[^a-z])${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z]|$)`, "i").test(t);
   for (const it of ev.items || []) {
+    if (!relevant(it)) continue;
     const hit = local.find(w => has(it.title, w));
     if (hit) out.push({ ...it, where: hit, strength: 2 });
-    else if (state && (it.type === "ban" || it.type === "vip") && has(it.title, state)) out.push({ ...it, where: state, strength: 1 });
+    else if (state && it.type === "ban" && has(it.title, state)) out.push({ ...it, where: state, strength: 1 });   // state-wide bans only
   }
   return out.sort((a, b) => b.strength - a.strength).slice(0, 8);
 }
@@ -159,13 +165,7 @@ async function render(el, spot, addr, opts) {
     <p>The only correct answer for green, yellow or red is the government's Digital Sky airspace map, which also has red zones that no other source lists (military areas, government sites, temporary orders). FlyCheck does not guess it.</p>
     <div class="row"><a class="btn pri" href="https://digitalsky.aai.aero/" target="_blank" rel="noopener">Open Digital Sky (Airspace Map / Check Zone Intersection)</a></div>
     <p class="mute">Your spot: <b>${spot.lat.toFixed(5)}, ${spot.lon.toFixed(5)}</b> <button type="button" class="mini" id="cpll">Copy</button> — paste it into the map's search.${ap0 ? ` For reference only: the nearest airport is ${esc(ap0.name)}, ${ap0.km.toFixed(1)} km from its centre.` : ""}</p>
-    <details class="dsk"><summary>Show the Digital Sky map here</summary>
-      <p class="mute">This is the government's own site, shown inside FlyCheck. Open its Airspace Map, then paste your coordinates (Copy button above) into its search. If this box stays blank, Digital Sky doesn't allow being shown inside other sites: use the button above instead.</p>
-      <div class="dskwrap"></div></details>
     ${b ? `<p><b>Border district.</b> ${esc(b.text)}</p>` : ""}</div>`;
-    const dk = q("a-zone").querySelector("details.dsk");
-    dk.addEventListener("toggle", () => { const w = dk.querySelector(".dskwrap"); if (dk.open && !w.firstChild)
-      w.innerHTML = '<iframe src="https://digitalsky.aai.aero/" title="Digital Sky (DGCA / AAI) official site" loading="lazy" allow="geolocation; clipboard-read; clipboard-write" referrerpolicy="strict-origin-when-cross-origin"></iframe>'; });
     const cp = q("cpll"); cp.onclick = async () => { try { await navigator.clipboard.writeText(`${spot.lat.toFixed(5)}, ${spot.lon.toFixed(5)}`); cp.textContent = "Copied"; } catch (e) {} }; });
   // news
   events().then(ev => { if (!live()) return; const hits = matchEvents(ev, addr);
