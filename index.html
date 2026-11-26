@@ -96,7 +96,7 @@ button.mini{min-height:28px;padding:2px 8px;font-size:13px}
  <section id="out"><div class="empty">Search a place, tap the map, or use your location.<br>You'll get GO / CAUTION / NO-GO for your planned time and the best windows in the next 3 days.</div></section>
 </div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="around.js"></script>
+<script src="around.js?v=12"></script>
 <script>
 {
 const DRONES=[["mini","DJI Mini series (sub-250 g)",10.7,-10,40,false],["avata2","DJI Avata 2",10.7,-10,40,false],["air3","DJI Air 3",12,-10,40,false],
@@ -181,9 +181,13 @@ function centre(){try{const c=mmap.getCenter();return [c.lat,c.lng??c.lon]}catch
 function pinCoords(eLoc){return new Promise(res=>{if(!plugins||!mappls.getPinDetails||!eLoc)return res(null);let done=false;const before=mmap?centre():null;
  const finish=d=>{if(done)return;done=true;let ll=findLatLon(d);
    // the plugin moves the map to the place; if its answer has no readable coordinates, use where it moved the map
-   if(!ll&&mmap){const c=centre();if(c&&before&&(Math.abs(c[0]-before[0])>1e-5||Math.abs(c[1]-before[1])>1e-5))ll=c}
-   try{pinObj&&pinObj.remove&&pinObj.remove()}catch(e){}res(ll)};
- try{pinObj=mappls.getPinDetails({map:mmap||undefined,pin:eLoc,infoDiv:false},d=>setTimeout(()=>finish(d),mmap?1200:0))}catch(e){return res(null)}
+   const end=v=>{try{pinObj&&pinObj.remove&&pinObj.remove()}catch(e){}res(v)};
+   if(ll||!mmap)return end(ll);
+   // no coordinates in the answer: wait until the map has finished flying to the place, then use its centre
+   let last=centre(),n=0;const iv=setInterval(()=>{const c=centre();n++;
+     const still=c&&last&&Math.abs(c[0]-last[0])<1e-6&&Math.abs(c[1]-last[1])<1e-6,moved=c&&before&&(Math.abs(c[0]-before[0])>1e-4||Math.abs(c[1]-before[1])>1e-4);
+     if((still&&moved)||n>24){clearInterval(iv);end(still&&moved?c:null)}last=c},250)};
+ try{pinObj=mappls.getPinDetails({map:mmap||undefined,pin:eLoc,infoDiv:false},d=>finish(d))}catch(e){return res(null)}
  setTimeout(()=>finish(null),9000)})}
 async function mapplsCoords(x){if(x.ll)return x.ll;const p=await pinCoords(x.eLoc);if(p)return p;
  const r=await fetch(`https://search.mappls.com/search/address/geocode?address=${encodeURIComponent((x.name+", "+x.desc).slice(0,200))}&access_token=${MAPPLS_KEY}`);if(!r.ok)return null;return findLatLon(await r.json())}
@@ -199,16 +203,22 @@ function parseLoc(q){q=q.trim();let m;
   return {lat:dms(m[1],m[2],m[3],m[4]),lon:dms(m[5],m[6],m[7],m[8])};
  return null}
 
-async function search(){const q=$("#q").value.trim();if(!q)return;const p=parseLoc(q);
+let searchSeq=0;
+async function search(quiet){const q=$("#q").value.trim();if(!q)return;const p=parseLoc(q);
+ if(quiet&&(p||q.length<3))return;           // suggestions only for place names
  if(p&&p.err)return showResults(`<div>${esc(p.err)}</div>`);
  if(p){hideResults();return pick(p.lat,p.lon,null,true)}
- showResults('<div><span class="spin"></span>Searching…</div>');
+ const my=++searchSeq,stale=()=>my!==searchSeq;   // a newer keystroke/search replaces this one
+ if(!quiet)showResults('<div><span class="spin"></span>Searching…</div>');
  let items=[],netFail=0;
  mWhy="";if(MAPPLS_KEY){try{items=(await mapplsSearch(q)).map(x=>({...x,mappls:true}))}catch(e){mWhy+=" · "+e.message}}
+ if(stale())return;
+ if(quiet&&!items.length)return;              // while typing: Mappls suggestions only; press Search for the other sources
  if(!items.length)try{const r=await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&countrycodes=in&q=${encodeURIComponent(q)}`);
   items=(await r.json()).map(x=>({name:x.name||x.display_name.split(",")[0],desc:x.display_name,lat:+x.lat,lon:+x.lon}))}catch(e){netFail++}
  if(!items.length){try{const r=await fetch(`https://geocoding-api.open-meteo.com/v1/search?count=6&countryCode=IN&name=${encodeURIComponent(q)}`);
   items=((await r.json()).results||[]).map(x=>({name:x.name,desc:[x.admin2,x.admin1,x.country].filter(Boolean).join(", "),lat:x.latitude,lon:x.longitude}))}catch(e){netFail++}}
+ if(stale())return;
  if(!items.length&&netFail>=2)return showResults('<div><b>Can\'t reach the internet from here.</b> If you opened this inside a chat preview, open the hosted link or the downloaded file in Chrome/Safari instead.</div>');
  if(!items.length)return showResults(`<div>No match.${mWhy?` <small>Mappls: ${esc(mWhy)}</small>`:""} Apartment and office names are often missing from the free map database. In Google Maps, long-press the spot, copy the coordinates and paste them here (or tap the map).</div>`);
  showResults(items.map((x,i)=>`<div role="option" data-i="${i}"><b>${esc(x.name)}</b><small>${esc(x.desc)}${x.mappls?" · Mappls":""}</small></div>`).join("")+(mWhy&&!items[0].mappls?`<div><small>Mappls search didn't answer (${esc(mWhy)}); these results are from OpenStreetMap.</small></div>`:""));
@@ -217,11 +227,12 @@ async function search(){const q=$("#q").value.trim();if(!q)return;const p=parseL
   hideResults();pick(x.lat,x.lon,x.name,false)})}
 function showResults(h){$("#results").innerHTML=h;$("#results").style.display="block"}
 function hideResults(){$("#results").style.display="none"}
-$("#go").onclick=search;$("#q").addEventListener("keydown",e=>{if(e.key=="Enter")search();if(e.key=="Escape")hideResults()});
+$("#go").onclick=()=>search();$("#q").addEventListener("keydown",e=>{if(e.key=="Enter")search();if(e.key=="Escape")hideResults()});
+let typeT=0;$("#q").addEventListener("input",()=>{clearTimeout(typeT);typeT=setTimeout(()=>search(true),450)});
 document.addEventListener("click",e=>{if(!e.target.closest(".search"))hideResults()});
 let addr={};
 async function reverse(lat,lon){try{const r=await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=14&lat=${lat}&lon=${lon}`);const j=await r.json();
- const a=j.address||{};if(spot&&spot.lat==lat)addr=a;return placeName(a)||j.name||null}catch(e){return null}}
+ const a=j.address||{};if(spot&&spot.lat==lat&&spot.lon==lon)addr=a;return placeName(a)||j.name||null}catch(e){return null}}
 function placeName(a){const local=a.neighbourhood||a.suburb||a.village||a.hamlet||a.quarter,mid=a.neighbourhood?(a.suburb||a.city_district):a.city_district,town=a.city||a.town||a.municipality||a.county||a.state_district;
  return [...new Set([local,mid,town].filter(Boolean))].slice(0,3).join(", ")||null}
 $("#me").onclick=()=>{if(!navigator.geolocation)return showErr("This browser can't share location. Search instead.");
@@ -237,17 +248,19 @@ $("#save").onclick=()=>{if(!spot)return;const s=store.get("fc_spots",[]).filter(
 renderSaved();
 
 /* ---------- data ---------- */
-async function pick(lat,lon,name,doReverse){
- spot={lat,lon,name:name||`${lat.toFixed(4)}, ${lon.toFixed(4)}`};
+let pickSeq=0;
+async function pick(lat,lon,name,doReverse){const my=++pickSeq;
+ spot={lat,lon,name:name||`${lat.toFixed(4)}, ${lon.toFixed(4)}`,id:my};
+ const el0=$("#around");if(el0){el0.__tok=(el0.__tok||0)+1;el0.innerHTML=""}   // clear the previous place's checks at once
  mapGo(lat,lon);
  $("#out").innerHTML='<div class="empty"><span class="spin"></span>Getting the forecast…</div>';
- addr={};const revP=reverse(lat,lon).then(n=>{if(doReverse&&n&&spot&&spot.lat==lat){spot.name=n;const el=$("#pname");if(el)el.textContent=n}});spot.rev=revP;
+ addr={};const revP=reverse(lat,lon).then(n=>{if(doReverse&&n&&spot&&spot.id==my){spot.name=n;const el=$("#pname");if(el)el.textContent=n}});spot.rev=revP;
  demo=false;
  try{const r=await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(4)}&longitude=${lon.toFixed(4)}&hourly=${VARS}&wind_speed_unit=ms&timezone=Asia%2FKolkata&forecast_days=3`);
-  if(!r.ok)throw new Error("HTTP "+r.status);fc=await r.json()}
- catch(e){fc=null;return showErr(`Couldn't reach the forecast service (${esc(e.message)}). Check your connection. If you opened this inside a chat preview, open it in Chrome/Safari or from its hosted link instead: previews block outside connections.`,true)}
+  if(!r.ok)throw new Error("HTTP "+r.status);const j=await r.json();if(my!==pickSeq)return;fc=j}
+ catch(e){if(my!==pickSeq)return;fc=null;return showErr(`Couldn't reach the forecast service (${esc(e.message)}). Check your connection. If you opened this inside a chat preview, open it in Chrome/Safari or from its hosted link instead: previews block outside connections.`,true)}
  kp={};try{const r=await fetch("https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json");kp=parseKp(await r.json())}catch(e){}
- evaluateAll()}
+ if(my!==pickSeq)return;evaluateAll()}
 function showErr(msg,offerDemo){$("#out").innerHTML=`<div class="err">${msg}${offerDemo?'<div class="row"><button id="retry">Try again</button><button id="dm">Show demo data</button></div>':""}</div>`;
  if(offerDemo){$("#retry").onclick=()=>pick(spot.lat,spot.lon,spot.name,false);$("#dm").onclick=()=>{fc=synthetic();fc.elevation=900;kp={};demo=true;evaluateAll()}}}
 function parseKp(raw){const out={};if(!Array.isArray(raw)||!raw.length)return out;let rows;
@@ -325,7 +338,7 @@ async function obsRun(){const el=$("#obs");if(!el||!spot)return;const ck=spot.la
 let aroundKey="";
 async function aroundRun(){const el=$("#around");if(!el||!window.Around)return;const key=[spot.lat,spot.lon,$("#when").value.slice(0,10),$("#ht").value].join("|");
 
- if(spot.rev)await Promise.race([spot.rev,new Promise(r=>setTimeout(r,6000))]);await Around.render(el,spot,addr,{htM:+$("#ht").value||120,dateIso:$("#when").value.slice(0,10)||new Date().toISOString().slice(0,10)})}
+ const s0=spot;if(spot.rev)await Promise.race([spot.rev,new Promise(r=>setTimeout(r,6000))]);if(spot!==s0)return;await Around.render(el,spot,addr,{htM:+$("#ht").value||120,dateIso:$("#when").value.slice(0,10)||new Date().toISOString().slice(0,10)})}
 function show(i,planned){sel=i;const x=verdicts[i];
  $("#stamp").innerHTML=`<div class="stamp" style="background:${COL[x.v]}"><div class="v">${x.v}</div><div><div class="when">${esc(fmt(x.t))} IST${i==planned?" · your planned time":""}</div><ul>${x.r.map(r=>`<li>${esc(r)}</li>`).join("")}</ul></div></div>`;
  const T=[["Wind at "+(+$("#ht").value||120)+" m",x.w+" m/s"],["Gusts",x.g+" m/s"],["Rain",`${x.rain} mm · ${Math.round(x.rp)}%`],["Visibility",x.vis==null?"–":(x.vis/1000).toFixed(1)+" km"],

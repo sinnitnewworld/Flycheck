@@ -151,7 +151,7 @@ function letterUI(el, spot, police, zoneLine) {
 async function render(el, spot, addr, opts) {
   const token = (el.__tok = (el.__tok || 0) + 1), live = () => el.__tok === token;
   const wait = '<p class="mute"><span class="spin"></span>Loading…</p>';
-  el.innerHTML = `<div id="a-zone"></div><div class="card" id="a-news"><b>News: bans, VIP visits, air shows, crowds near here</b>${wait}</div><div id="a-cal"></div>
+  el.innerHTML = `<p class="mute" id="a-for">Checked for <b>${esc(spot.name)}</b> · ${spot.lat.toFixed(5)}, ${spot.lon.toFixed(5)} · <a href="https://maps.google.com/?q=${spot.lat.toFixed(5)},${spot.lon.toFixed(5)}" target="_blank" rel="noopener">see this point on Google Maps</a></p><div id="a-zone"></div><div class="card" id="a-news"><b>News: bans, VIP visits, air shows, crowds near here</b>${wait}</div><div id="a-cal"></div>
     <div class="card" id="a-police"><b>Nearest police stations</b>${wait}</div><div class="card" id="a-power"><b>Power lines</b>${wait}</div><div id="letter"></div>`;
   const q = id => el.querySelector("#" + id);
   // calendar and letter need nothing from the network
