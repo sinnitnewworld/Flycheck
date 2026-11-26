@@ -146,6 +146,9 @@ async function render(el, spot, addr, opts) {
     <p>The only correct answer for green, yellow or red is the government's Digital Sky airspace map, which also has red zones that no other source lists (military areas, government sites, temporary orders). FlyCheck does not guess it.</p>
     <div class="row"><a class="btn pri" href="https://digitalsky.aai.aero/" target="_blank" rel="noopener">Open Digital Sky (Airspace Map / Check Zone Intersection)</a></div>
     <p class="mute">Your spot: <b>${spot.lat.toFixed(5)}, ${spot.lon.toFixed(5)}</b> <button type="button" class="mini" id="cpll">Copy</button> — paste it into the map's search.${ap0 ? ` For reference only: the nearest airport is ${esc(ap0.name)}, ${ap0.km.toFixed(1)} km from its centre.` : ""}</p>
+    <details class="dsk"><summary>Show the Digital Sky map here</summary>
+      <p class="mute">This is the government's own site, shown inside FlyCheck. Open its Airspace Map, then paste your coordinates (Copy button above) into its search. If this box stays blank, Digital Sky doesn't allow being shown inside other sites: use the button above instead.</p>
+      <div class="dskwrap"></div></details>
     ${b ? `<p><b>Border district.</b> ${esc(b.text)}</p>` : ""}</div>`;
   // news
   h += `<div class="card"><b>News: bans, VIP visits, air shows, crowds near here</b>`;
@@ -165,6 +168,9 @@ async function render(el, spot, addr, opts) {
     h += `<div class="card" style="border-left-color:${near ? "#d64545" : mid ? "#d99300" : "#1f9d55"}"><b>Power lines</b><p>${l ? `${l.hv ? "High-voltage line" : "Power line"} about ${Math.round(l.m)} m from your spot${l.volt ? ` (${esc(String(l.volt).split(";").map(v=>+v>=1000?Math.round(+v/1000)+" kV":v+" V").join(", "))})` : ""}.` : "No power line mapped within 600 m."}${near ? " Too close: wires are hard to see on camera, and strong lines can upset the drone's compass. Take off at least 150 m away." : mid ? " Keep clear of it while flying and don't calibrate the compass near it." : ""}${osm.towers ? ` ${osm.towers} towers/poles mapped within 300 m.` : ""}</p><p class="mute">Only lines that volunteers have mapped are shown; many local lines are missing. Always look before take-off.</p></div>`; }
   h += `<div id="letter"></div>`;
   el.innerHTML = h;
+  const dk = el.querySelector("details.dsk");
+  if (dk) dk.addEventListener("toggle", () => { const w = dk.querySelector(".dskwrap"); if (dk.open && !w.firstChild)
+    w.innerHTML = '<iframe src="https://digitalsky.aai.aero/" title="Digital Sky (DGCA / AAI) official site" loading="lazy" allow="geolocation; clipboard-read; clipboard-write" referrerpolicy="strict-origin-when-cross-origin"></iframe>'; });
   const cp = el.querySelector("#cpll"); if (cp) cp.onclick = async () => { try { await navigator.clipboard.writeText(`${spot.lat.toFixed(5)}, ${spot.lon.toFixed(5)}`); cp.textContent = "Copied"; } catch (e) {} };
   letterUI(el.querySelector("#letter"), spot, osm && osm.police, zoneLine);
 }
