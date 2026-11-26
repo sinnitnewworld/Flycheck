@@ -39,7 +39,7 @@ function borderCheck(addr) {
   const st = addr.state || "", dist = [addr.state_district, addr.district, addr.county, addr.city, addr.town].filter(Boolean).join(" ");
   const b = BORDER.find(x => x.st.test(st) && x.d.test(dist));
   if (!b) return null;
-  return { gps: b.gps, text: `This district borders ${b.side}. Much of the land within 25 km of the international border is a RED zone on the Digital Sky map, and security forces watch for drones here.` +
+  return { gps: b.gps, text: `This district borders ${b.side}: the official map has red zones along the border, and security forces watch for drones here.` +
     (b.gps === "high" ? " GPS jamming and spoofing are frequently reported in this area: your drone may lose GPS, drift or show a false position. Keep it close, in sight, and be ready to fly it without GPS (ATTI mode)." :
       b.gps === "medium" ? " GPS interference has been reported along this border: watch for sudden position jumps or loss of GPS." : "") };
 }
@@ -140,11 +140,13 @@ async function render(el, spot, addr, opts) {
   el.innerHTML = '<div class="mute"><span class="spin"></span>Checking airspace, police stations, power lines and news…</div>';
   const [ap, osm, ev] = await Promise.all([airports(), osmAround(spot.lat, spot.lon), events()]);
   const z = zoneFromAirports(ap, spot.lat, spot.lon, opts.htM), b = borderCheck(addr), hits = matchEvents(ev, addr), cal = calendar(opts.dateIso, addr);
-  const COLOR = { red: "#d64545", yellow: "#d99300", green: "#1f9d55", grey: "#8a8a8a" };
-  const zoneLine = z.color === "green" ? "Green zone (estimated from airport distance; confirmed on the Digital Sky map)" : z.color === "yellow" ? "Yellow zone: ATC permission obtained via Digital Sky (permission no. ______)" : "Red zone: Central Government permission no. ______";
-  let h = `<div class="card zone" style="border-left-color:${COLOR[b && z.color === "green" ? "yellow" : z.color]}"><b>Airspace (estimate): ${b && z.color === "green" ? "CHECK — border area" : z.color.toUpperCase()}</b><p>${esc(z.text)}</p>
-    ${b ? `<p><b>Border area.</b> ${esc(b.text)}</p>` : ""}
-    <p class="mute">This estimate only knows airport distances${b ? " and border districts" : ""}. Red zones also cover military areas, the Rashtrapati Bhavan / Parliament area, some government sites and temporary police orders. <a href="https://digitalsky.dgca.gov.in/airspace-map" target="_blank" rel="noopener">Check the official Digital Sky map</a> before every flight.</p></div>`;
+  const zoneLine = "[zone as shown on the official Digital Sky airspace map: green / yellow (ATC permission no. ____) / red (permission no. ____)]";
+  const ap0 = z.near[0];
+  let h = `<div class="card zone" style="border-left-color:#3b6e8f"><b>Drone zone: check the official map</b>
+    <p>The only correct answer for green, yellow or red is the government's Digital Sky airspace map, which also has red zones that no other source lists (military areas, government sites, temporary orders). FlyCheck does not guess it.</p>
+    <div class="row"><a class="btn pri" href="https://digitalsky.aai.aero/" target="_blank" rel="noopener">Open Digital Sky (Airspace Map / Check Zone Intersection)</a></div>
+    <p class="mute">Your spot: <b>${spot.lat.toFixed(5)}, ${spot.lon.toFixed(5)}</b> <button type="button" class="mini" id="cpll">Copy</button> — paste it into the map's search.${ap0 ? ` For reference only: the nearest airport is ${esc(ap0.name)}, ${ap0.km.toFixed(1)} km from its centre.` : ""}</p>
+    ${b ? `<p><b>Border district.</b> ${esc(b.text)}</p>` : ""}</div>`;
   // news
   h += `<div class="card"><b>News: bans, VIP visits, air shows, crowds near here</b>`;
   if (hits.length) h += `<ul>${hits.map(x => `<li><span class="tag ${x.type}">${esc(TYPE[x.type])}</span> <a href="${esc(x.link)}" target="_blank" rel="noopener">${esc(x.title)}</a> <span class="mute">· ${esc(x.source)}${x.published_utc ? " · " + new Date(x.published_utc.replace("Z", ":00Z")).toLocaleString("en-IN", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" }) : ""} · matched “${esc(x.where)}”${x.strength === 1 ? " (state level)" : ""}</span></li>`).join("")}</ul>
@@ -163,6 +165,7 @@ async function render(el, spot, addr, opts) {
     h += `<div class="card" style="border-left-color:${near ? "#d64545" : mid ? "#d99300" : "#1f9d55"}"><b>Power lines</b><p>${l ? `${l.hv ? "High-voltage line" : "Power line"} about ${Math.round(l.m)} m from your spot${l.volt ? ` (${esc(String(l.volt).split(";").map(v=>+v>=1000?Math.round(+v/1000)+" kV":v+" V").join(", "))})` : ""}.` : "No power line mapped within 600 m."}${near ? " Too close: wires are hard to see on camera, and strong lines can upset the drone's compass. Take off at least 150 m away." : mid ? " Keep clear of it while flying and don't calibrate the compass near it." : ""}${osm.towers ? ` ${osm.towers} towers/poles mapped within 300 m.` : ""}</p><p class="mute">Only lines that volunteers have mapped are shown; many local lines are missing. Always look before take-off.</p></div>`; }
   h += `<div id="letter"></div>`;
   el.innerHTML = h;
+  const cp = el.querySelector("#cpll"); if (cp) cp.onclick = async () => { try { await navigator.clipboard.writeText(`${spot.lat.toFixed(5)}, ${spot.lon.toFixed(5)}`); cp.textContent = "Copied"; } catch (e) {} };
   letterUI(el.querySelector("#letter"), spot, osm && osm.police, zoneLine);
 }
 

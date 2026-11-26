@@ -64,6 +64,8 @@ h2{font-size:15px;margin:20px 0 6px}
 .spin{display:inline-block;width:18px;height:18px;border:3px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:s 1s linear infinite;vertical-align:-4px;margin-right:8px}
 @keyframes s{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.spin{animation:none}}
 .leaflet-container{font:inherit}
+a.btn{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:8px 14px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-weight:600;text-decoration:none}a.btn.pri{background:var(--accent);border-color:var(--accent);color:#fff}
+button.mini{min-height:28px;padding:2px 8px;font-size:13px}
 .card{background:var(--panel);border:1px solid var(--line);border-left:5px solid var(--line);border-radius:12px;padding:10px 14px;margin-top:10px}.card p{margin:6px 0}.card ul{margin:6px 0 0 18px;padding:0}.card li{margin:4px 0}
 .card summary{font-weight:700;cursor:pointer;min-height:28px}.mute{font-size:13px;color:var(--mute)}
 .tag{display:inline-block;font-size:11px;font-weight:800;border-radius:6px;padding:1px 6px;color:#fff;background:#3b6e8f}.tag.ban{background:var(--no)}.tag.vip{background:#8a3ffc}.tag.airshow{background:#3b6e8f}.tag.crowd{background:var(--cau)}
@@ -258,29 +260,16 @@ function render(target){const d=drone(),z=fc.elevation??0,reg=region(spot.lat,sp
  <h2>Next 72 hours <span class="meta">· tap an hour · faded = dark</span></h2><div class="strip" id="strip"></div>
  <h2>Best daylight windows</h2><div id="wins"></div>
  <h2>Before you fly here</h2><div id="around"></div>
- <div class="row"><button id="zonesBtn">Show the official drone-zone map (Digital Sky)</button></div><div id="zmap"></div>
- <div class="note">Planning forecast, not a guarantee: hills and the monsoon change faster than models. The airspace section above is an estimate: confirm green / yellow / red zones on Digital Sky before every flight. Wind ratings are manufacturer figures; check your manual. Forecast: Open-Meteo · Kp: NOAA SWPC.</div>`;
+ <div class="note">Planning forecast, not a guarantee: hills and the monsoon change faster than models. Confirm green / yellow / red zones on the official Digital Sky map before every flight. Wind ratings are manufacturer figures; check your manual. Forecast: Open-Meteo · Kp: NOAA SWPC.</div>`;
  $("#strip").innerHTML=verdicts.map((x,i)=>{const hh=+x.t.slice(11,13);return `<button class="h ${x.day?"":"night"}" data-i="${i}" style="background:${COL[x.v]}" aria-label="${esc(fmt(x.t))}: ${x.v}">${hh==0?"<b>"+x.t.slice(8,10)+"</b>":""}${hh}</button>`}).join("");
  document.querySelectorAll(".h").forEach(b=>b.onclick=()=>show(+b.dataset.i,planned));
  $("#wins").innerHTML=wins.length?wins.map(w=>`<div class="win" data-t="${w[0].t}"><b>${esc(fmt(w[0].t))}</b> → ${pad(+w[w.length-1].t.slice(11,13)+1)}:00 · ${w.length} h of GO · wind up to ${Math.max(...w.map(x=>x.w))} m/s</div>`).join(""):'<div class="win" style="border-left-color:var(--no)">No daylight GO window in the next 3 days.</div>';
  document.querySelectorAll(".win[data-t]").forEach(el=>el.onclick=()=>show(verdicts.findIndex(x=>x.t==el.dataset.t),planned));
- show(sel,planned);aroundRun();$("#zonesBtn").onclick=zonesMap}
+ show(sel,planned);aroundRun()}
 let aroundKey="";
 async function aroundRun(){const el=$("#around");if(!el||!window.Around)return;const key=[spot.lat,spot.lon,$("#when").value.slice(0,10),$("#ht").value].join("|");
 
  if(spot.rev)await spot.rev;await Around.render(el,spot,addr,{htM:+$("#ht").value||120,dateIso:$("#when").value.slice(0,10)||new Date().toISOString().slice(0,10)})}
-/* official Digital Sky zones via the Mappls map SDK (loaded only when asked for) */
-let zmap=null,zsdk=null;
-function zonesMap(){const box=$("#zmap");box.style.display="block";box.innerHTML='<div class="mute" style="padding:12px"><span class="spin"></span>Loading the official zone layers…</div>';
- const draw=()=>{try{box.innerHTML="";zmap=new mappls.Map("zmap",{center:[spot.lat,spot.lon],zoom:11,zoomControl:true});
-   zmap.addListener&&zmap.addListener("load",()=>{try{new mappls.Marker({map:zmap,position:{lat:spot.lat,lng:spot.lon}})}catch(e){}});
-   new mappls.airspaceLayer({map:zmap,key:MAPPLS_KEY,position:"topleft",multiple:true,expand:true,
-    defaultLayer:["airport_region_radius_0_to_5_km","airport_region_radius_5_to_8_km","airport_region_radius_8_to_12_km_yellow","coastal_area_india_region_25km"]})}
-  catch(e){box.innerHTML=`<div class="err">The zone map couldn't load (${esc(e.message)}). <a href="https://digitalsky.dgca.gov.in/airspace-map" target="_blank" rel="noopener">Open the Digital Sky airspace map</a> instead.</div>`}};
- if(window.mappls&&window.mappls.Map)return draw();
- window.__fcZones=draw;if(zsdk)return;zsdk=document.createElement("script");
- zsdk.src=`https://apis.mappls.com/advancedmaps/api/${MAPPLS_KEY}/map_sdk?layer=vector&v=3.0&libraries=geoanalytics&callback=__fcZones&airspacelayers`;
- zsdk.onerror=()=>{box.innerHTML='<div class="err">Couldn\'t reach Mappls. <a href="https://digitalsky.dgca.gov.in/airspace-map" target="_blank" rel="noopener">Open the Digital Sky airspace map</a> instead.</div>';zsdk=null};document.head.appendChild(zsdk)}
 function show(i,planned){sel=i;const x=verdicts[i];
  $("#stamp").innerHTML=`<div class="stamp" style="background:${COL[x.v]}"><div class="v">${x.v}</div><div><div class="when">${esc(fmt(x.t))} IST${i==planned?" · your planned time":""}</div><ul>${x.r.map(r=>`<li>${esc(r)}</li>`).join("")}</ul></div></div>`;
  const T=[["Wind at "+(+$("#ht").value||120)+" m",x.w+" m/s"],["Gusts",x.g+" m/s"],["Rain",`${x.rain} mm · ${Math.round(x.rp)}%`],["Visibility",x.vis==null?"–":(x.vis/1000).toFixed(1)+" km"],

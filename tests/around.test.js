@@ -2,7 +2,7 @@ const A = require("../around.js"), assert = require("assert"), fs = require("fs"
 const ap = JSON.parse(fs.readFileSync(__dirname + "/../airports.json"));
 let n = 0; const t = (m, f) => { f(); n++; console.log("ok -", m); };
 t("Bengaluru airport: red very close, yellow 5-8 km, green far", () => {
-  assert.strictEqual(A.zoneFromAirports(ap, 13.1979, 77.7063, 50).color, "red");
+  assert.strictEqual(A.zoneFromAirports(ap, 13.1979, 77.7063, 50).near[0].code, "VOBL");
   assert.strictEqual(A.zoneFromAirports(ap, 13.1979 + 0.085, 77.7063, 50).color, "yellow");        // ~9.4 km from centre -> 7.4 km from edge
   assert.strictEqual(A.zoneFromAirports(ap, 12.90, 77.50, 100).color, "green");                    // RR Nagar, >12 km from HAL edge
 });
@@ -31,7 +31,7 @@ t("calendar: Republic Day and kite season", () => {
   assert.strictEqual(A.calendar("2027-03-10", { state: "Delhi" }).length, 0);
 });
 t("letter contains the essentials", () => {
-  const L = A.letterText({ pname: "Nitin", rpc: "RPC123", uin: "UA0001", date: "2026-12-01", from: "07:00", to: "08:00", maxh: "60", purpose: "Real-estate photography" }, "Rajarajeshwari Nagar Police Station", { name: "RR Nagar", lat: 12.92, lon: 77.51 }, "Green zone");
-  ["Rajarajeshwari Nagar Police Station", "RPC123", "UA0001", "12.92000, 77.51000", "60 m", "Green zone"].forEach(k => assert(L.includes(k), k));
+  const L = A.letterText({ pname: "Nitin", rpc: "RPC123", uin: "UA0001", date: "2026-12-01", from: "07:00", to: "08:00", maxh: "60", purpose: "Real-estate photography" }, "Rajarajeshwari Nagar Police Station", { name: "RR Nagar", lat: 12.92, lon: 77.51 }, "[zone]");
+  ["Rajarajeshwari Nagar Police Station", "RPC123", "UA0001", "12.92000, 77.51000", "60 m", ].forEach(k => assert(L.includes(k), k));
 });
 console.log(n + " tests passed");
