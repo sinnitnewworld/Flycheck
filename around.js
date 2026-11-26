@@ -6,11 +6,14 @@
 const D = Math.PI / 180;
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const hav = (a, b, c, d) => { const x = Math.sin((c - a) * D / 2) ** 2 + Math.cos(a * D) * Math.cos(c * D) * Math.sin((d - b) * D / 2) ** 2; return 12742 * Math.asin(Math.sqrt(x)); };
+// fetch with a time limit, so one slow service can never hold up the page
+function fetchT(url, opts = {}, ms = 10000) { const c = new AbortController(), t = setTimeout(() => c.abort(), ms);
+  return fetch(url, Object.assign({}, opts, { signal: c.signal })).finally(() => clearTimeout(t)); }
 const store = { get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch (e) { return d; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} } };
 
 /* ---------- 1. zone estimate from airport distance (Drone Rules 2021 airspace map) ---------- */
 let AIRPORTS = null;
-async function airports() { if (!AIRPORTS) { try { AIRPORTS = await (await fetch("airports.json")).json(); } catch (e) { AIRPORTS = []; } } return AIRPORTS; }
+async function airports() { if (!AIRPORTS) { try { AIRPORTS = await (await fetchT("airports.json", {}, 8000)).json(); } catch (e) { AIRPORTS = []; } } return AIRPORTS; }
 // distances are to the airport's centre point; the rule uses the airport boundary, so 2 km is taken off to stay on the safe side
 function zoneFromAirports(list, lat, lon, htM) {
   const near = list.map(a => ({ name: a[0], code: a[3], sched: !!a[4], mil: !!a[5], km: hav(lat, lon, a[1], a[2]) })).sort((x, y) => x.km - y.km).slice(0, 3);
@@ -45,16 +48,19 @@ function borderCheck(addr) {
 }
 
 /* ---------- 3. police stations and power lines (OpenStreetMap via Overpass) ---------- */
-const OVERPASS = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
-async function overpass(q) { for (const u of OVERPASS) { try { const r = await fetch(u, { method: "POST", body: "data=" + encodeURIComponent(q) }); if (r.ok) return await r.json(); } catch (e) {} } return null; }
+const OVERPASS = ["https://overpass-api.de/api/interpreter", "https://overpass.private.coffee/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
+// ask all mirrors at once and use whichever answers first (each limited to 15 s)
+async function overpass(q) {
+  const one = u => fetchT(u, { method: "POST", body: "data=" + encodeURIComponent(q) }, 15000).then(r => r.ok ? r.json() : Promise.reject(r.status));
+  try { return await Promise.any(OVERPASS.map(one)); } catch (e) { return null; } }
 function segDistM(lat, lon, a, b) { const kx = 111320 * Math.cos(lat * D), ky = 110540, ax = (a.lon - lon) * kx, ay = (a.lat - lat) * ky, bx = (b.lon - lon) * kx, by = (b.lat - lat) * ky, dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy;
   const t = L ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / L)) : 0; return Math.hypot(ax + t * dx, ay + t * dy); }
 const OSM_CACHE = {};
 async function osmAround(lat, lon) {
   const ck = lat.toFixed(4) + "," + lon.toFixed(4); if (OSM_CACHE[ck]) return OSM_CACHE[ck];
-  const q = `[out:json][timeout:25];(node["amenity"="police"](around:20000,${lat},${lon});way["amenity"="police"](around:20000,${lat},${lon}););out center tags 30;
+  const q = `[out:json][timeout:12];(node["amenity"="police"](around:20000,${lat},${lon});way["amenity"="police"](around:20000,${lat},${lon}););out center tags 30;
 (way["power"~"^(line|minor_line)$"](around:600,${lat},${lon});node["power"~"^(tower|pole)$"](around:300,${lat},${lon}););out geom 200;`;
-  const j = await overpass(q); if (!j) return null;
+  const j = await overpass(q); if (!j) return null;   // not cached, so "Try again" asks again
   const police = [], lines = []; let towers = 0;
   for (const e of j.elements || []) {
     const t = e.tags || {};
@@ -69,7 +75,7 @@ async function osmAround(lat, lon) {
 
 /* ---------- 4. news-based cautions (events.json from the PassCast scanner) ---------- */
 let EVENTS = null;
-async function events() { if (EVENTS) return EVENTS; for (const u of ["/Passcast/events.json", "https://sinnitnewworld.github.io/Passcast/events.json"]) { try { const r = await fetch(u, { cache: "no-store" }); if (r.ok) return EVENTS = await r.json(); } catch (e) {} } return EVENTS = { items: [] }; }
+async function events() { if (EVENTS) return EVENTS; for (const u of ["/Passcast/events.json", "https://sinnitnewworld.github.io/Passcast/events.json"]) { try { const r = await fetchT(u, { cache: "no-store" }, 8000); if (r.ok) return EVENTS = await r.json(); } catch (e) {} } return { items: [], failed: true }; }
 const TYPE = { ban: "Drone ban / no-fly order", vip: "Announced VIP visit", airshow: "Air show / fly-past", crowd: "Big gathering" };
 function placeTokens(addr) {
   const local = [addr.village, addr.suburb, addr.town, addr.city, addr.city_district, addr.county, addr.state_district, addr.district].filter(Boolean);
@@ -137,12 +143,19 @@ function letterUI(el, spot, police, zoneLine) {
 
 /* ---------- render the whole section ---------- */
 async function render(el, spot, addr, opts) {
-  el.innerHTML = '<div class="mute"><span class="spin"></span>Checking airspace, police stations, power lines and news…</div>';
-  const [ap, osm, ev] = await Promise.all([airports(), osmAround(spot.lat, spot.lon), events()]);
-  const z = zoneFromAirports(ap, spot.lat, spot.lon, opts.htM), b = borderCheck(addr), hits = matchEvents(ev, addr), cal = calendar(opts.dateIso, addr);
+  const token = (el.__tok = (el.__tok || 0) + 1), live = () => el.__tok === token;
+  const wait = '<p class="mute"><span class="spin"></span>Loading…</p>';
+  el.innerHTML = `<div id="a-zone"></div><div class="card" id="a-news"><b>News: bans, VIP visits, air shows, crowds near here</b>${wait}</div><div id="a-cal"></div>
+    <div class="card" id="a-police"><b>Nearest police stations</b>${wait}</div><div class="card" id="a-power"><b>Power lines</b>${wait}</div><div id="letter"></div>`;
+  const q = id => el.querySelector("#" + id);
+  // calendar and letter need nothing from the network
+  const cal = calendar(opts.dateIso, addr);
+  if (cal.length) q("a-cal").innerHTML = `<div class="card"><b>On your date</b><ul>${cal.map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>`;
   const zoneLine = "[zone as shown on the official Digital Sky airspace map: green / yellow (ATC permission no. ____) / red (permission no. ____)]";
-  const ap0 = z.near[0];
-  let h = `<div class="card zone" style="border-left-color:#3b6e8f"><b>Drone zone: check the official map</b>
+  letterUI(q("letter"), spot, [], zoneLine);
+  // zone card (airport list is a small local file)
+  airports().then(ap => { if (!live()) return; const z = zoneFromAirports(ap, spot.lat, spot.lon, opts.htM), b = borderCheck(addr), ap0 = z.near[0];
+    q("a-zone").innerHTML = `<div class="card zone" style="border-left-color:#3b6e8f"><b>Drone zone: check the official map</b>
     <p>The only correct answer for green, yellow or red is the government's Digital Sky airspace map, which also has red zones that no other source lists (military areas, government sites, temporary orders). FlyCheck does not guess it.</p>
     <div class="row"><a class="btn pri" href="https://digitalsky.aai.aero/" target="_blank" rel="noopener">Open Digital Sky (Airspace Map / Check Zone Intersection)</a></div>
     <p class="mute">Your spot: <b>${spot.lat.toFixed(5)}, ${spot.lon.toFixed(5)}</b> <button type="button" class="mini" id="cpll">Copy</button> — paste it into the map's search.${ap0 ? ` For reference only: the nearest airport is ${esc(ap0.name)}, ${ap0.km.toFixed(1)} km from its centre.` : ""}</p>
@@ -150,29 +163,30 @@ async function render(el, spot, addr, opts) {
       <p class="mute">This is the government's own site, shown inside FlyCheck. Open its Airspace Map, then paste your coordinates (Copy button above) into its search. If this box stays blank, Digital Sky doesn't allow being shown inside other sites: use the button above instead.</p>
       <div class="dskwrap"></div></details>
     ${b ? `<p><b>Border district.</b> ${esc(b.text)}</p>` : ""}</div>`;
+    const dk = q("a-zone").querySelector("details.dsk");
+    dk.addEventListener("toggle", () => { const w = dk.querySelector(".dskwrap"); if (dk.open && !w.firstChild)
+      w.innerHTML = '<iframe src="https://digitalsky.aai.aero/" title="Digital Sky (DGCA / AAI) official site" loading="lazy" allow="geolocation; clipboard-read; clipboard-write" referrerpolicy="strict-origin-when-cross-origin"></iframe>'; });
+    const cp = q("cpll"); cp.onclick = async () => { try { await navigator.clipboard.writeText(`${spot.lat.toFixed(5)}, ${spot.lon.toFixed(5)}`); cp.textContent = "Copied"; } catch (e) {} }; });
   // news
-  h += `<div class="card"><b>News: bans, VIP visits, air shows, crowds near here</b>`;
-  if (hits.length) h += `<ul>${hits.map(x => `<li><span class="tag ${x.type}">${esc(TYPE[x.type])}</span> <a href="${esc(x.link)}" target="_blank" rel="noopener">${esc(x.title)}</a> <span class="mute">· ${esc(x.source)}${x.published_utc ? " · " + new Date(x.published_utc.replace("Z", ":00Z")).toLocaleString("en-IN", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" }) : ""} · matched “${esc(x.where)}”${x.strength === 1 ? " (state level)" : ""}</span></li>`).join("")}</ul>
-    <p class="mute">Open the article for the exact area, dates and times of any order.</p>`;
-  else h += `<p>${(ev.items || []).length ? "Nothing found for this area in the last 3 days of news." : "The news scan isn't available right now."}</p>`;
-  h += `<p class="mute">Scanned from public news${ev.generated_utc ? ", last at " + new Date(ev.generated_utc.replace("Z", ":00Z")).toLocaleString("en-IN", { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short", timeZone: "Asia/Kolkata" }) + " IST" : ""}. Police often announce bans only a day or two ahead, and some only on the day: ask the local police station when you inform them.</p></div>`;
-  if (cal.length) h += `<div class="card"><b>On your date</b><ul>${cal.map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>`;
-  // police
-  h += `<div class="card"><b>Nearest police stations</b>`;
-  if (!osm) h += `<p>Couldn't reach the map service. Try again later.</p>`;
-  else if (!osm.police.length) h += `<p>No police station is mapped within 20 km.</p>`;
-  else h += `<ul>${osm.police.map(p => `<li><b>${esc(p.name)}</b> · ${p.km.toFixed(1)} km${p.phone ? ` · <a href="tel:${esc(p.phone.split(/[;,]/)[0])}">${esc(p.phone.split(/[;,]/)[0])}</a>` : " · phone not mapped"}${p.addr ? ` · ${esc(p.addr)}` : ""} · <a href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}" target="_blank" rel="noopener">directions</a></li>`).join("")}</ul>`;
-  h += `<p class="mute">From OpenStreetMap. The station that covers your spot (its “jurisdiction”) can be a different one: confirm by phone. Emergency: 112.</p></div>`;
-  // power lines
-  if (osm) { const l = osm.line, near = l && l.m < 150, mid = l && l.m < 400;
-    h += `<div class="card" style="border-left-color:${near ? "#d64545" : mid ? "#d99300" : "#1f9d55"}"><b>Power lines</b><p>${l ? `${l.hv ? "High-voltage line" : "Power line"} about ${Math.round(l.m)} m from your spot${l.volt ? ` (${esc(String(l.volt).split(";").map(v=>+v>=1000?Math.round(+v/1000)+" kV":v+" V").join(", "))})` : ""}.` : "No power line mapped within 600 m."}${near ? " Too close: wires are hard to see on camera, and strong lines can upset the drone's compass. Take off at least 150 m away." : mid ? " Keep clear of it while flying and don't calibrate the compass near it." : ""}${osm.towers ? ` ${osm.towers} towers/poles mapped within 300 m.` : ""}</p><p class="mute">Only lines that volunteers have mapped are shown; many local lines are missing. Always look before take-off.</p></div>`; }
-  h += `<div id="letter"></div>`;
-  el.innerHTML = h;
-  const dk = el.querySelector("details.dsk");
-  if (dk) dk.addEventListener("toggle", () => { const w = dk.querySelector(".dskwrap"); if (dk.open && !w.firstChild)
-    w.innerHTML = '<iframe src="https://digitalsky.aai.aero/" title="Digital Sky (DGCA / AAI) official site" loading="lazy" allow="geolocation; clipboard-read; clipboard-write" referrerpolicy="strict-origin-when-cross-origin"></iframe>'; });
-  const cp = el.querySelector("#cpll"); if (cp) cp.onclick = async () => { try { await navigator.clipboard.writeText(`${spot.lat.toFixed(5)}, ${spot.lon.toFixed(5)}`); cp.textContent = "Copied"; } catch (e) {} };
-  letterUI(el.querySelector("#letter"), spot, osm && osm.police, zoneLine);
+  events().then(ev => { if (!live()) return; const hits = matchEvents(ev, addr);
+    let h = `<b>News: bans, VIP visits, air shows, crowds near here</b>`;
+    if (hits.length) h += `<ul>${hits.map(x => `<li><span class="tag ${x.type}">${esc(TYPE[x.type])}</span> <a href="${esc(x.link)}" target="_blank" rel="noopener">${esc(x.title)}</a> <span class="mute">· ${esc(x.source)}${x.published_utc ? " · " + new Date(x.published_utc.replace("Z", ":00Z")).toLocaleString("en-IN", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" }) : ""} · matched “${esc(x.where)}”${x.strength === 1 ? " (state level)" : ""}</span></li>`).join("")}</ul><p class="mute">Open the article for the exact area, dates and times of any order.</p>`;
+    else h += `<p>${ev.failed ? "The news scan couldn't be loaded right now." : !Object.keys(addr).length ? "Couldn't work out the town or district for this spot, so news can't be matched." : "Nothing found for this area in the last 3 days of news."}</p>`;
+    h += `<p class="mute">Scanned from public news${ev.generated_utc ? ", last at " + new Date(ev.generated_utc.replace("Z", ":00Z")).toLocaleString("en-IN", { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short", timeZone: "Asia/Kolkata" }) + " IST" : ""}. Police often announce bans only a day or two ahead, and some only on the day: ask the local police station when you inform them.</p>`;
+    q("a-news").innerHTML = h; });
+  // police and power lines (OpenStreetMap; can be slow)
+  osmAround(spot.lat, spot.lon).then(osm => { if (!live()) return;
+    const retry = '<p>The map service is busy right now. <button type="button" class="mini a-retry">Try again</button></p>';
+    if (!osm) { q("a-police").innerHTML = "<b>Nearest police stations</b>" + retry; q("a-power").innerHTML = "<b>Power lines</b>" + retry;
+      el.querySelectorAll(".a-retry").forEach(b => b.onclick = () => render(el, spot, addr, opts)); return; }
+    let p = `<b>Nearest police stations</b>`;
+    p += osm.police.length ? `<ul>${osm.police.map(p => `<li><b>${esc(p.name)}</b> · ${p.km.toFixed(1)} km${p.phone ? ` · <a href="tel:${esc(p.phone.split(/[;,]/)[0])}">${esc(p.phone.split(/[;,]/)[0])}</a>` : " · phone not mapped"}${p.addr ? ` · ${esc(p.addr)}` : ""} · <a href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}" target="_blank" rel="noopener">directions</a></li>`).join("")}</ul>` : "<p>No police station is mapped within 20 km.</p>";
+    p += `<p class="mute">From OpenStreetMap. The station that covers your spot (its “jurisdiction”) can be a different one: confirm by phone. Emergency: 112.</p>`;
+    q("a-police").innerHTML = p;
+    const l = osm.line, near = l && l.m < 150, mid = l && l.m < 400;
+    const pw = q("a-power"); pw.style.borderLeftColor = near ? "#d64545" : mid ? "#d99300" : "#1f9d55";
+    pw.innerHTML = `<b>Power lines</b><p>${l ? `${l.hv ? "High-voltage line" : "Power line"} about ${Math.round(l.m)} m from your spot${l.volt ? ` (${esc(String(l.volt).split(";").map(v => +v >= 1000 ? Math.round(+v / 1000) + " kV" : v + " V").join(", "))})` : ""}.` : "No power line mapped within 600 m."}${near ? " Too close: wires are hard to see on camera, and strong lines can upset the drone's compass. Take off at least 150 m away." : mid ? " Keep clear of it while flying and don't calibrate the compass near it." : ""}${osm.towers ? ` ${osm.towers} towers/poles mapped within 300 m.` : ""}</p><p class="mute">Only lines that volunteers have mapped are shown; many local lines are missing. Always look before take-off.</p>`;
+    letterUI(q("letter"), spot, osm.police, zoneLine); });
 }
 
 const API = { zoneFromAirports, borderCheck, matchEvents, calendar, letterText, render, placeTokens };

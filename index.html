@@ -66,6 +66,7 @@ h2{font-size:15px;margin:20px 0 6px}
 .leaflet-container{font:inherit}
 a.btn{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:8px 14px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-weight:600;text-decoration:none}a.btn.pri{background:var(--accent);border-color:var(--accent);color:#fff}
 details.dsk{margin-top:8px}.dskwrap iframe{width:100%;height:min(75vh,640px);border:1px solid var(--line);border-radius:10px;background:#fff;margin-top:6px}
+.obs{font-size:14px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 12px}
 button.mini{min-height:28px;padding:2px 8px;font-size:13px}
 .card{background:var(--panel);border:1px solid var(--line);border-left:5px solid var(--line);border-radius:12px;padding:10px 14px;margin-top:10px}.card p{margin:6px 0}.card ul{margin:6px 0 0 18px;padding:0}.card li{margin:4px 0}
 .card summary{font-weight:700;cursor:pointer;min-height:28px}.mute{font-size:13px;color:var(--mute)}
@@ -151,7 +152,7 @@ function mapGo(lat,lon){
  if(mmap){try{mmap.setCenter({lat,lng:lon});if((mmap.getZoom&&mmap.getZoom()<12))mmap.setZoom(13);
    if(mmarker)mmarker.setPosition({lat,lng:lon});else{mmarker=new mappls.Marker({map:mmap,position:{lat,lng:lon},draggable:true});
     try{mmarker.addListener("dragend",()=>{const p=mmarker.getPosition();pick(p.lat,p.lng,null,true)})}catch(e){}}}catch(e){note("Map error: "+e.message)}return}
- mapGo(lat,lon);}
+ if(map){map.setView([lat,lon],Math.max(map.getZoom(),11));if(marker)marker.setLatLng([lat,lon]);else{marker=L.marker([lat,lon],{draggable:true}).addTo(map);marker.on("dragend",e=>{const p=e.target.getLatLng();pick(p.lat,p.lng,null,true)})}}}
 (async()=>{try{await initMappls();note("Map and search by Mappls (MapmyIndia).")}catch(e){note("Mappls map couldn't load ("+e.message+"). Showing OpenStreetMap instead.");mmap=null;initLeaflet()}})();
 
 /* ---------- geocoding ---------- */
@@ -291,15 +292,28 @@ function render(target){const d=drone(),z=fc.elevation??0,reg=region(spot.lat,sp
  $("#wins").innerHTML=wins.length?wins.map(w=>`<div class="win" data-t="${w[0].t}"><b>${esc(fmt(w[0].t))}</b> → ${pad(+w[w.length-1].t.slice(11,13)+1)}:00 · ${w.length} h of GO · wind up to ${Math.max(...w.map(x=>x.w))} m/s</div>`).join(""):'<div class="win" style="border-left-color:var(--no)">No daylight GO window in the next 3 days.</div>';
  document.querySelectorAll(".win[data-t]").forEach(el=>el.onclick=()=>show(verdicts.findIndex(x=>x.t==el.dataset.t),planned));
  show(sel,planned);aroundRun()}
+/* measured weather at the nearest airport (METAR, via the US Aviation Weather Center), to compare with the forecast */
+let obsCache={};
+async function obsRun(){const el=$("#obs");if(!el||!spot)return;const ck=spot.lat.toFixed(2)+","+spot.lon.toFixed(2);
+ const put=o=>{if(!o){el.innerHTML="";return}el.innerHTML=`<b>Measured now</b> at ${esc(o.name)} airport (${o.km.toFixed(0)} km away, ${o.at} IST): <b>${o.t} °C</b>${o.w!=null?`, wind ${o.w} m/s`:""}${o.vis?`, visibility ${o.vis}`:""}. The forecast tiles above are for the hour you've selected and for a ~10 km grid square, so they can differ by a few degrees, especially at night.`};
+ if(obsCache[ck]!==undefined)return put(obsCache[ck]);el.innerHTML="";
+ try{const ap=await (await fetch("airports.json")).json(),D=Math.PI/180,hv=(a,b,c,d)=>12742*Math.asin(Math.sqrt(Math.sin((c-a)*D/2)**2+Math.cos(a*D)*Math.cos(c*D)*Math.sin((d-b)*D/2)**2));
+  const near=ap.filter(a=>/^V[A-Z]{3}$/.test(a[3])).map(a=>({name:a[0],id:a[3],km:hv(spot.lat,spot.lon,a[1],a[2])})).sort((x,y)=>x.km-y.km).slice(0,3).filter(a=>a.km<60);
+  if(!near.length)return put(obsCache[ck]=null);
+  const c=new AbortController();setTimeout(()=>c.abort(),8000);
+  const r=await fetch(`https://aviationweather.gov/api/data/metar?ids=${near.map(a=>a.id).join(",")}&format=json`,{signal:c.signal});const j=await r.json();
+  for(const a of near){const m=(j||[]).find(x=>x.icaoId===a.id);if(!m||m.temp==null)continue;const age=(Date.now()/1000-(m.obsTime||0))/3600;if(age>3)continue;
+   return put(obsCache[ck]={name:a.name,km:a.km,t:Math.round(m.temp),w:m.wspd!=null?Math.round(m.wspd*.5144):null,vis:m.visib?(m.visib==="6+"?"10 km or more":m.visib+" mi"):null,at:new Date(m.obsTime*1000+5.5*3600e3).toISOString().slice(11,16)})}
+  put(obsCache[ck]=null)}catch(e){put(null)}}
 let aroundKey="";
 async function aroundRun(){const el=$("#around");if(!el||!window.Around)return;const key=[spot.lat,spot.lon,$("#when").value.slice(0,10),$("#ht").value].join("|");
 
- if(spot.rev)await spot.rev;await Around.render(el,spot,addr,{htM:+$("#ht").value||120,dateIso:$("#when").value.slice(0,10)||new Date().toISOString().slice(0,10)})}
+ if(spot.rev)await Promise.race([spot.rev,new Promise(r=>setTimeout(r,6000))]);await Around.render(el,spot,addr,{htM:+$("#ht").value||120,dateIso:$("#when").value.slice(0,10)||new Date().toISOString().slice(0,10)})}
 function show(i,planned){sel=i;const x=verdicts[i];
  $("#stamp").innerHTML=`<div class="stamp" style="background:${COL[x.v]}"><div class="v">${x.v}</div><div><div class="when">${esc(fmt(x.t))} IST${i==planned?" · your planned time":""}</div><ul>${x.r.map(r=>`<li>${esc(r)}</li>`).join("")}</ul></div></div>`;
  const T=[["Wind at "+(+$("#ht").value||120)+" m",x.w+" m/s"],["Gusts",x.g+" m/s"],["Rain",`${x.rain} mm · ${Math.round(x.rp)}%`],["Visibility",x.vis==null?"–":(x.vis/1000).toFixed(1)+" km"],
-  ["Cloud base",x.low<50?"no low cloud":(x.base==null?"–":"~"+x.base+" m")],["Low cloud",Math.round(x.low)+"%"],["Temperature",x.temp==null?"–":Math.round(x.temp)+" °C"],["Kp (GPS)",x.kp==null?"–":x.kp.toFixed(1)]];
- $("#tiles").innerHTML=T.map(([k,v])=>`<div><b>${esc(v)}</b><span>${esc(k)}</span></div>`).join("");
+  ["Cloud base",x.low<50?"no low cloud":(x.base==null?"–":"~"+x.base+" m")],["Low cloud",Math.round(x.low)+"%"],["Temperature (forecast, "+x.t.slice(11,16)+")",x.temp==null?"–":Math.round(x.temp)+" °C"],["Kp (GPS)",x.kp==null?"–":x.kp.toFixed(1)]];
+ $("#tiles").innerHTML=T.map(([k,v])=>`<div><b>${esc(v)}</b><span>${esc(k)}</span></div>`).join("")+'<div class="obs" id="obs" style="grid-column:1/-1"></div>';obsRun();
  document.querySelectorAll(".h").forEach((b,j)=>{b.classList.toggle("sel",j==i);if(j==i)b.scrollIntoView({block:"nearest",inline:"center"})})}
 
 /* ---------- demo forecast (offline) ---------- */
