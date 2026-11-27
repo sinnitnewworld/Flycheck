@@ -96,7 +96,7 @@ button.mini{min-height:28px;padding:2px 8px;font-size:13px}
  <section id="out"><div class="empty">Search a place, tap the map, or use your location.<br>You'll get GO / CAUTION / NO-GO for your planned time and the best windows in the next 3 days.</div></section>
 </div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="around.js?v=13"></script>
+<script src="around.js?v=14"></script>
 <script>
 {
 const DRONES=[["mini","DJI Mini series (sub-250 g)",10.7,-10,40,false],["avata2","DJI Avata 2",10.7,-10,40,false],["air3","DJI Air 3",12,-10,40,false],
@@ -161,17 +161,23 @@ function mapGo(lat,lon){
 /* ---------- geocoding ---------- */
 // Mappls (MapmyIndia) static key, restricted to this site in the Mappls console. Gives Indian address
 // search (apartments, buildings) and the official Digital Sky airspace layers.
-function findLatLon(o){if(!o||typeof o!="object")return null;const la=o.latitude??o.lat??o.entryLatitude,lo=o.longitude??o.lng??o.lon??o.entryLongitude;
+// look for coordinates in a plain data answer only; never inside map / marker objects (they hold the map's own centre,
+// which is how "22.5, 79" - the starting view of India - was once taken as a place's location)
+function findLatLon(o,depth=0){if(!o||typeof o!="object"||depth>4)return null;const pr=Object.getPrototypeOf(o);if(pr!==Object.prototype&&pr!==Array.prototype&&pr!==null)return null;const la=o.latitude??o.lat??o.entryLatitude,lo=o.longitude??o.lng??o.lon??o.entryLongitude;
  const ok=(a,b)=>a!=null&&b!=null&&a!==""&&b!==""&&isFinite(+a)&&isFinite(+b)&&+a>5&&+a<40&&+b>65&&+b<100;   // inside India's box
  if(ok(la,lo))return [+la,+lo];
  if(Array.isArray(o.coordinates)&&ok(o.coordinates[1],o.coordinates[0]))return [+o.coordinates[1],+o.coordinates[0]];
- for(const k in o){const v=o[k];if(v&&typeof v=="object"){const r=findLatLon(v);if(r)return r}}return null}
+ for(const k in o){if(/map|marker|layer|parent|owner|container|style|transform|bounds|view|center|centre/i.test(k))continue;const v=o[k];if(v&&typeof v=="object"){const r=findLatLon(v,depth+1);if(r)return r}}return null}
+const near=(a,b,e=1e-3)=>a&&b&&Math.abs(a[0]-b[0])<e&&Math.abs(a[1]-b[1])<e;
+const DEBUG=/[?&]debug=1/.test(location.search);
+function dbg(label,d){if(!DEBUG)return;let t;try{const seen=new WeakSet();t=JSON.stringify(d,(k,v)=>{if(v&&typeof v=="object"){if(seen.has(v))return "[loop]";seen.add(v);const pr=Object.getPrototypeOf(v);if(pr!==Object.prototype&&pr!==Array.prototype)return "["+(v.constructor&&v.constructor.name||"object")+"]"}return v}).slice(0,1500)}catch(e){t=String(e)}
+ note((($("#mapnote").textContent||"")+" | "+label+": "+t).slice(-3000))}
 let mWhy="";
 function viaPlugin(q){return new Promise((res,rej)=>{if(!plugins||!mappls.search)return rej(new Error("search plugin not loaded"));let done=false;
  try{new mappls.search(q,{region:"IND",location:spot?[spot.lat,spot.lon]:undefined},d=>{done=true;res(Array.isArray(d)?d:(d&&(d.suggestedLocations||d.data))||[])})}catch(e){return rej(e)}
  setTimeout(()=>{if(!done)rej(new Error("search plugin gave no answer"))},10000)})}
-async function mapplsSearch(q){const map1=x=>({name:x.placeName||x.poi||x.name,desc:x.placeAddress||x.address||"",eLoc:x.eLoc||x.mapplsPin||x.eloc,ll:findLatLon(x)});
- try{const d=await viaPlugin(q);if(d.length)return d.slice(0,8).map(map1)}catch(e){mWhy="plugin: "+e.message}
+async function mapplsSearch(q){const c0=mmap?centre():null;const map1=x=>{const ll=findLatLon(x);return {name:x.placeName||x.poi||x.name,desc:x.placeAddress||x.address||"",eLoc:x.eLoc||x.mapplsPin||x.eloc,ll:ll&&!near(ll,c0)?ll:null}};
+ try{const d=await viaPlugin(q);dbg("search answer",d[0]);if(d.length)return d.slice(0,8).map(map1)}catch(e){mWhy="plugin: "+e.message}
  const near=spot?`&location=${spot.lat.toFixed(4)},${spot.lon.toFixed(4)}`:"";
  try{const r=await fetch(`https://search.mappls.com/search/places/autosuggest/json?query=${encodeURIComponent(q.slice(0,45))}&region=IND${near}&access_token=${MAPPLS_KEY}`);
   if(!r.ok){mWhy+=` · web service: HTTP ${r.status}${r.status==401||r.status==403?" (key not allowed: check Mappls whitelisting / API access)":""}`;return []}
@@ -181,6 +187,10 @@ function centre(){try{const c=mmap.getCenter();return [c.lat,c.lng??c.lon]}catch
 function pinCoords(eLoc){return new Promise(res=>{if(!plugins||!mappls.getPinDetails||!eLoc)return res(null);let done=false;const before=mmap?centre():null;
  const finish=d=>{if(done)return;done=true;let ll=findLatLon(d);
    // the plugin moves the map to the place; if its answer has no readable coordinates, use where it moved the map
+   dbg("pin answer",d);
+   // a place is never exactly where the map was centred when you tapped it: that would be the map's own centre
+   if(ll&&near(ll,before))ll=null;
+   if(!ll){try{const p=pinObj&&(pinObj.getPosition?pinObj.getPosition():pinObj.getLngLat&&pinObj.getLngLat());const m=p&&[+(p.lat??p[1]),+(p.lng??p.lon??p[0])];if(m&&isFinite(m[0])&&!near(m,before))ll=m}catch(e){}}
    const end=v=>{try{pinObj&&pinObj.remove&&pinObj.remove()}catch(e){}res(v)};
    if(ll||!mmap)return end(ll);
    // no coordinates in the answer: wait until the map has finished flying to the place, then use its centre
@@ -190,7 +200,12 @@ function pinCoords(eLoc){return new Promise(res=>{if(!plugins||!mappls.getPinDet
  try{pinObj=mappls.getPinDetails({map:mmap||undefined,pin:eLoc,infoDiv:false},d=>finish(d))}catch(e){return res(null)}
  setTimeout(()=>finish(null),9000)})}
 async function mapplsCoords(x){if(x.ll)return x.ll;const p=await pinCoords(x.eLoc);if(p)return p;
- const r=await fetch(`https://search.mappls.com/search/address/geocode?address=${encodeURIComponent((x.name+", "+x.desc).slice(0,200))}&access_token=${MAPPLS_KEY}`);if(!r.ok)return null;return findLatLon(await r.json())}
+ try{const r=await fetch(`https://search.mappls.com/search/address/geocode?address=${encodeURIComponent((x.name+", "+x.desc).slice(0,200))}&access_token=${MAPPLS_KEY}`);if(r.ok){const g=findLatLon(await r.json());if(g)return g}}catch(e){}
+ // last resort: find the address (not the shop) in OpenStreetMap; clearly marked as approximate
+ for(const q of [x.desc,x.desc.split(",").slice(-3).join(",")]){if(!q)continue;
+  try{const r=await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=in&q=${encodeURIComponent(q)}`);const j=await r.json();
+   if(j[0])return Object.assign([+j[0].lat,+j[0].lon],{approx:true})}catch(e){}}
+ return null}
 const LL=/^\s*(-?\d{1,2}(?:\.\d+)?)\s*[,\s]\s*(-?\d{1,3}(?:\.\d+)?)\s*$/;
 function dms(d,m,s,h){let v=(+d)+(+m||0)/60+(+s||0)/3600;if(/[SW]/i.test(h||""))v=-v;return v}
 function parseLoc(q){q=q.trim();let m;
@@ -223,7 +238,7 @@ async function search(quiet){const q=$("#q").value.trim();if(!q)return;const p=p
  if(!items.length)return showResults(`<div>No match.${mWhy?` <small>Mappls: ${esc(mWhy)}</small>`:""} Apartment and office names are often missing from the free map database. In Google Maps, long-press the spot, copy the coordinates and paste them here (or tap the map).</div>`);
  showResults(items.map((x,i)=>`<div role="option" data-i="${i}"><b>${esc(x.name)}</b><small>${esc(x.desc)}${x.mappls?" · Mappls":""}</small></div>`).join("")+(mWhy&&!items[0].mappls?`<div><small>Mappls search didn't answer (${esc(mWhy)}); these results are from OpenStreetMap.</small></div>`:""));
  document.querySelectorAll("#results [data-i]").forEach(el=>el.onclick=async()=>{const x=items[+el.dataset.i];
-  if(x.mappls){el.innerHTML='<span class="spin"></span>Finding it on the map…';const ll=await mapplsCoords(x);if(!ll)return el.innerHTML="<b>Couldn't get the location of this place.</b> Try another result or paste coordinates.";hideResults();return pick(ll[0],ll[1],x.name,false)}
+  if(x.mappls){el.innerHTML='<span class="spin"></span>Finding it on the map…';const ll=await mapplsCoords(x);if(!ll)return el.innerHTML="<b>Couldn't get the location of this place.</b> Try another result or paste coordinates.";hideResults();if(ll.approx)note("Mappls didn't give the exact location of “"+x.name+"”, so this is the area from its address. Tap the exact spot on the map to correct it.");return pick(ll[0],ll[1],x.name+(ll.approx?" (approx. area)":""),false)}
   hideResults();pick(x.lat,x.lon,x.name,false)})}
 function showResults(h){$("#results").innerHTML=h;$("#results").style.display="block"}
 function hideResults(){$("#results").style.display="none"}
