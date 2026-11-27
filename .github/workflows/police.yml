@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: bash tools/probe.sh
+      - run: python3 tools/probe.py
       - run: python3 tools/police.py police || true
       - name: Commit if changed
         run: |
