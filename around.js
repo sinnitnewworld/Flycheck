@@ -56,21 +56,40 @@ async function overpass(q) {
 function segDistM(lat, lon, a, b) { const kx = 111320 * Math.cos(lat * D), ky = 110540, ax = (a.lon - lon) * kx, ay = (a.lat - lat) * ky, bx = (b.lon - lon) * kx, by = (b.lat - lat) * ky, dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy;
   const t = L ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / L)) : 0; return Math.hypot(ax + t * dx, ay + t * dy); }
 const OSM_CACHE = {};
+// what kind of police office an OpenStreetMap entry is; only "station" can be the one covering a spot
+function policeKind(name) {
+  if (/traffic|sanchara|ಸಂಚಾರ/i.test(name)) return "traffic";
+  if (/out ?post|chowki|chauki|beat|booth|kiosk|check ?post|picket|help ?desk/i.test(name)) return "outpost";
+  if (/women|mahila|ಮಹಿಳಾ/i.test(name)) return "women";
+  if (/cyber|\bcen\b|economic|narcotic|railway|\bgrp\b/i.test(name)) return "special";
+  if (/quarters|commissioner|\bdcp\b|\bacp\b|\bsp office|headquarter|training|academy|battalion|ksrp|\bcar\b|control room|range|office of/i.test(name)) return "office";
+  return /police station|\bps\b|thana|ठाणे|थाना|ಠಾಣೆ|station/i.test(name) ? "station" : "other";
+}
 async function osmAround(lat, lon) {
   const ck = lat.toFixed(4) + "," + lon.toFixed(4); if (OSM_CACHE[ck]) return OSM_CACHE[ck];
-  const q = `[out:json][timeout:12];(node["amenity"="police"](around:20000,${lat},${lon});way["amenity"="police"](around:20000,${lat},${lon}););out center tags 30;
+  // no result cap: a cap returns an arbitrary 30 (not the nearest 30) in a big city, which was the earlier bug
+  const pq = r => `node["amenity"="police"](around:${r},${lat},${lon});way["amenity"="police"](around:${r},${lat},${lon});relation["amenity"="police"](around:${r},${lat},${lon});`;
+  const q = `[out:json][timeout:20];(${pq(12000)});out center tags;
 (way["power"~"^(line|minor_line)$"](around:600,${lat},${lon});node["power"~"^(tower|pole)$"](around:300,${lat},${lon}););out geom 200;`;
-  const j = await overpass(q); if (!j) return null;   // not cached, so "Try again" asks again
+  let j = await overpass(q); if (!j) return null;   // not cached, so "Try again" asks again
   const police = [], lines = []; let towers = 0;
-  for (const e of j.elements || []) {
+  const take = els => { for (const e of els || []) {
     const t = e.tags || {};
     if (t.amenity === "police") { const la = e.lat ?? e.center?.lat, lo = e.lon ?? e.center?.lon; if (la == null) continue;
-      police.push({ name: t.name || t["name:en"] || "Police station (name not mapped)", phone: t.phone || t["contact:phone"] || null, addr: [t["addr:street"], t["addr:city"]].filter(Boolean).join(", "), lat: la, lon: lo, km: hav(lat, lon, la, lo) }); }
+      const name = t["name:en"] || t.name || "", kind = name ? policeKind(name + " " + (t.police || "")) : "other";
+      if (police.some(p => p.name === name && Math.abs(p.lat - la) < 0.003)) continue;
+      police.push({ name: name || "Police office (name not mapped)", kind, phone: t.phone || t["contact:phone"] || null, addr: [t["addr:street"], t["addr:city"]].filter(Boolean).join(", "), lat: la, lon: lo, km: hav(lat, lon, la, lo) }); }
     else if (t.power === "line" || t.power === "minor_line") { let m = Infinity; const g = e.geometry || []; for (let i = 0; i < g.length - 1; i++) m = Math.min(m, segDistM(lat, lon, g[i], g[i + 1])); lines.push({ m, hv: t.power === "line", volt: t.voltage }); }
     else if (t.power) towers++;
+  } };
+  take(j.elements);
+  if (!police.some(p => p.kind === "station")) {   // countryside: look further out
+    const j2 = await overpass(`[out:json][timeout:25];(${pq(40000)});out center tags;`); if (j2) take(j2.elements);
   }
   police.sort((a, b) => a.km - b.km); lines.sort((a, b) => a.m - b.m);
-  return OSM_CACHE[ck] = { police: police.slice(0, 4), line: lines[0] || null, towers };
+  const stations = police.filter(p => p.kind === "station").slice(0, 3);
+  const traffic = police.find(p => p.kind === "traffic") || null;
+  return OSM_CACHE[ck] = { police: stations, traffic, line: lines[0] || null, towers };
 }
 
 /* ---------- 4. news-based cautions (events.json from the PassCast scanner) ---------- */
@@ -179,9 +198,11 @@ async function render(el, spot, addr, opts) {
     const retry = '<p>The map service is busy right now. <button type="button" class="mini a-retry">Try again</button></p>';
     if (!osm) { q("a-police").innerHTML = "<b>Nearest police stations</b>" + retry; q("a-power").innerHTML = "<b>Power lines</b>" + retry;
       el.querySelectorAll(".a-retry").forEach(b => b.onclick = () => render(el, spot, addr, opts)); return; }
+    const li = p => `<li><b>${esc(p.name)}</b> · ${p.km.toFixed(1)} km${p.phone ? ` · <a href="tel:${esc(p.phone.split(/[;,]/)[0])}">${esc(p.phone.split(/[;,]/)[0])}</a>` : " · phone not mapped"}${p.addr ? ` · ${esc(p.addr)}` : ""} · <a href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}" target="_blank" rel="noopener">directions</a></li>`;
     let p = `<b>Nearest police stations</b>`;
-    p += osm.police.length ? `<ul>${osm.police.map(p => `<li><b>${esc(p.name)}</b> · ${p.km.toFixed(1)} km${p.phone ? ` · <a href="tel:${esc(p.phone.split(/[;,]/)[0])}">${esc(p.phone.split(/[;,]/)[0])}</a>` : " · phone not mapped"}${p.addr ? ` · ${esc(p.addr)}` : ""} · <a href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}" target="_blank" rel="noopener">directions</a></li>`).join("")}</ul>` : "<p>No police station is mapped within 20 km.</p>";
-    p += `<p class="mute">From OpenStreetMap. The station that covers your spot (its “jurisdiction”) can be a different one: confirm by phone. Emergency: 112.</p>`;
+    p += osm.police.length ? `<ul>${osm.police.map(p => `<li><b>${esc(p.name)}</b> · ${p.km.toFixed(1)} km${p.phone ? ` · <a href="tel:${esc(p.phone.split(/[;,]/)[0])}">${esc(p.phone.split(/[;,]/)[0])}</a>` : " · phone not mapped"}${p.addr ? ` · ${esc(p.addr)}` : ""} · <a href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}" target="_blank" rel="noopener">directions</a></li>`).join("")}</ul>` : "<p>No police station is mapped within 40 km.</p>";
+    if (osm.traffic) p += `<p>Traffic police: <ul style="margin:4px 0">${li(osm.traffic)}</ul></p>`;
+    p += `<p class="mute">Nearest by straight-line distance, from OpenStreetMap (outposts, traffic, women's and office buildings are left out of the main list). The station responsible for your spot is set by police boundaries and can be a different one: the first station listed will tell you if so. Emergency: 112.</p>`;
     q("a-police").innerHTML = p;
     const l = osm.line, near = l && l.m < 150, mid = l && l.m < 400;
     const pw = q("a-power"); pw.style.borderLeftColor = near ? "#d64545" : mid ? "#d99300" : "#1f9d55";
@@ -189,6 +210,6 @@ async function render(el, spot, addr, opts) {
     letterUI(q("letter"), spot, osm.police, zoneLine); });
 }
 
-const API = { zoneFromAirports, borderCheck, matchEvents, calendar, letterText, render, placeTokens };
+const API = { policeKind, zoneFromAirports, borderCheck, matchEvents, calendar, letterText, render, placeTokens };
 if (typeof module !== "undefined" && module.exports) module.exports = API; else root.Around = API;
 })(typeof window !== "undefined" ? window : globalThis);

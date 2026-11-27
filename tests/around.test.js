@@ -43,4 +43,10 @@ t("news filter: only pilot-relevant VIP and air-show items", () => {
   const m = A.matchEvents(ev, { city: "Bengaluru", state: "Karnataka" });
   assert(m.length === 1 && /Traffic/.test(m[0].title), JSON.stringify(m));
 });
+t("police: only real police stations in the main list", () => {
+  const st = ["Rajarajeshwari Nagar Police Station", "Kengeri Police Station", "BSK 3rd stage Police Station", "J J R Nagar Police station", "ಗಿರಿನಗರ ಆರಕ್ಷಕ ಠಾಣೆ", "Andheri Police Thana"];
+  const not = { "Vijayanagara Traffic Police Station": "traffic", "Women's Police Station": "women", "Police Quarters": "office", "Commissioner of Police Office": "office", "Majestic Police Outpost": "outpost", "CEN Police Station West": "special", "Hoysala": "other" };
+  st.forEach(n => assert(A.policeKind(n) === "station", n));
+  for (const [n, k] of Object.entries(not)) assert(A.policeKind(n) === k, n + " -> " + A.policeKind(n));
+});
 console.log(n + " tests passed");
